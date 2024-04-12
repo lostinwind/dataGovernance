@@ -17,8 +17,10 @@
 
 package org.apache.seatunnel.core.starter.flink.execution;
 
-import org.apache.seatunnel.shade.com.typesafe.config.Config;
-
+import org.apache.flink.api.common.functions.FlatMapFunction;
+import org.apache.flink.api.common.typeinfo.TypeInformation;
+import org.apache.flink.streaming.api.datastream.DataStream;
+import org.apache.flink.types.Row;
 import org.apache.seatunnel.api.common.JobContext;
 import org.apache.seatunnel.api.configuration.ReadonlyConfig;
 import org.apache.seatunnel.api.configuration.util.ConfigValidator;
@@ -30,18 +32,15 @@ import org.apache.seatunnel.api.transform.SeaTunnelTransform;
 import org.apache.seatunnel.core.starter.exception.TaskExecuteException;
 import org.apache.seatunnel.core.starter.execution.PluginUtil;
 import org.apache.seatunnel.plugin.discovery.seatunnel.SeaTunnelTransformPluginDiscovery;
+import org.apache.seatunnel.shade.com.typesafe.config.Config;
 import org.apache.seatunnel.translation.flink.serialization.FlinkRowConverter;
 import org.apache.seatunnel.translation.flink.utils.TypeConverterUtils;
-
-import org.apache.flink.api.common.functions.FlatMapFunction;
-import org.apache.flink.api.common.typeinfo.TypeInformation;
-import org.apache.flink.streaming.api.datastream.DataStream;
-import org.apache.flink.types.Row;
 
 import java.net.URL;
 import java.util.Collections;
 import java.util.List;
-import java.util.stream.Collectors;
+import java.util.Optional;
+import java.util.Set;
 
 import static org.apache.seatunnel.api.common.CommonOptions.RESULT_TABLE_NAME;
 
@@ -49,71 +48,59 @@ public class TransformExecuteProcessor
         extends FlinkAbstractPluginExecuteProcessor<TableTransformFactory> {
 
     protected TransformExecuteProcessor(
-            List<URL> jarPaths,
-            Config envConfig,
-            List<? extends Config> pluginConfigs,
-            JobContext jobContext) {
-        super(jarPaths, envConfig, pluginConfigs, jobContext);
+            Config pluginConfig,
+            JobContext jobContext,
+            Set<URL> jarPaths,
+            Config envConfig) {
+        super(pluginConfig, jobContext, jarPaths, envConfig);
     }
 
     @Override
-    protected List<TableTransformFactory> initializePlugins(
-            List<URL> jarPaths, List<? extends Config> pluginConfigs) {
+    protected TableTransformFactory initializePlugin(Config pluginConfig) {
         SeaTunnelTransformPluginDiscovery transformPluginDiscovery =
                 new SeaTunnelTransformPluginDiscovery();
-
-        return pluginConfigs.stream()
-                .map(
-                        transformConfig ->
-                                PluginUtil.createTransformFactory(
-                                        transformPluginDiscovery, transformConfig, jarPaths))
-                .distinct()
-                .collect(Collectors.toList());
+        return PluginUtil.createTransformFactory(transformPluginDiscovery, pluginConfig, jarPaths);
     }
 
     @Override
-    public List<DataStreamTableInfo> execute(List<DataStreamTableInfo> upstreamDataStreams)
+    public DataStreamTableInfo execute(List<DataStreamTableInfo> upstreamDataStreams)
             throws TaskExecuteException {
-        if (plugins.isEmpty()) {
-            return upstreamDataStreams;
+        Optional<DataStream<Row>> reduce = upstreamDataStreams.stream().map(t -> t.getDataStream())
+                .reduce((t1, t2) -> t1.union(t2));
+        if (!reduce.isPresent()) {
+            throw new TaskExecuteException("该节点没有上游节点！");
         }
-        DataStreamTableInfo input = upstreamDataStreams.get(0);
+        DataStream<Row> stream = reduce.get();
         ClassLoader classLoader = Thread.currentThread().getContextClassLoader();
-        for (int i = 0; i < plugins.size(); i++) {
-            try {
-                Config pluginConfig = pluginConfigs.get(i);
-                DataStreamTableInfo stream =
-                        fromSourceTable(pluginConfig, upstreamDataStreams).orElse(input);
-                TableTransformFactory factory = plugins.get(i);
-                TableTransformFactoryContext context =
-                        new TableTransformFactoryContext(
-                                Collections.singletonList(stream.getCatalogTable()),
-                                ReadonlyConfig.fromConfig(pluginConfig),
-                                classLoader);
-                ConfigValidator.of(context.getOptions()).validate(factory.optionRule());
-                SeaTunnelTransform transform = factory.createTransform(context).createTransform();
 
-                SeaTunnelRowType sourceType = stream.getCatalogTable().getSeaTunnelRowType();
-                transform.setJobContext(jobContext);
-                DataStream<Row> inputStream =
-                        flinkTransform(sourceType, transform, stream.getDataStream());
-                registerResultTable(pluginConfig, inputStream);
-                upstreamDataStreams.add(
-                        new DataStreamTableInfo(
-                                inputStream,
-                                transform.getProducedCatalogTable(),
-                                pluginConfig.hasPath(RESULT_TABLE_NAME.key())
-                                        ? pluginConfig.getString(RESULT_TABLE_NAME.key())
-                                        : null));
-            } catch (Exception e) {
-                throw new TaskExecuteException(
-                        String.format(
-                                "SeaTunnel transform task: %s execute error",
-                                plugins.get(i).factoryIdentifier()),
-                        e);
-            }
+        try {
+            TableTransformFactory factory = plugin;
+            TableTransformFactoryContext context =
+                    new TableTransformFactoryContext(
+                            Collections.singletonList(upstreamDataStreams.get(0).getCatalogTable()),
+                            ReadonlyConfig.fromConfig(pluginConfig),
+                            classLoader);
+            ConfigValidator.of(context.getOptions()).validate(factory.optionRule());
+            SeaTunnelTransform transform = factory.createTransform(context).createTransform();
+
+            SeaTunnelRowType sourceType = upstreamDataStreams.get(0).getCatalogTable().getSeaTunnelRowType();
+            transform.setJobContext(jobContext);
+            DataStream<Row> inputStream =
+                    flinkTransform(sourceType, transform, stream);
+            registerResultTable(pluginConfig, inputStream);
+            return new DataStreamTableInfo(
+                            inputStream,
+                            transform.getProducedCatalogTable(),
+                            pluginConfig.hasPath(RESULT_TABLE_NAME.key())
+                                    ? pluginConfig.getString(RESULT_TABLE_NAME.key())
+                                    : null);
+        } catch (Exception e) {
+            throw new TaskExecuteException(
+                    String.format(
+                            "SeaTunnel transform task: %s execute error",
+                            plugin.factoryIdentifier()),
+                    e);
         }
-        return upstreamDataStreams;
     }
 
     protected DataStream<Row> flinkTransform(

@@ -86,6 +86,7 @@ public class JdbcSinkWriter
         if (jdbcSinkConfig.getJdbcConnectionConfig().getPassword().isPresent()) {
             ds.setPassword(jdbcSinkConfig.getJdbcConnectionConfig().getPassword().get());
         }
+        ds.setDriverClassName(jdbcSinkConfig.getJdbcConnectionConfig().getDriverName());
         ds.setAutoCommit(jdbcSinkConfig.getJdbcConnectionConfig().isAutoCommit());
         return new JdbcMultiTableResourceManager(new ConnectionPoolManager(ds));
     }

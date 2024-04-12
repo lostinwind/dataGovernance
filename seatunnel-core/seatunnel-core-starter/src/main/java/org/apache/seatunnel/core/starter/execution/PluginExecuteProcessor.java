@@ -29,7 +29,7 @@ import java.util.List;
  * @param <ENV> Runtime environment of engine
  */
 public interface PluginExecuteProcessor<T, ENV extends RuntimeEnvironment> {
-    List<T> execute(List<T> upstreamDataStreams) throws TaskExecuteException;
+    T execute(List<T> upstreamDataStreams) throws TaskExecuteException;
 
     void setRuntimeEnvironment(ENV runtimeEnvironment);
 }

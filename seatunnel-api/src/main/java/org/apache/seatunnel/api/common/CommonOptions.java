@@ -25,7 +25,7 @@ import java.util.List;
 public interface CommonOptions {
 
     Option<String> PLUGIN_NAME =
-            Options.key("plugin_name")
+            Options.key("code")
                     .stringType()
                     .noDefaultValue()
                     .withDescription("Name of the SPI plugin class.");

@@ -17,6 +17,7 @@
 
 package org.apache.seatunnel.core.starter.flink.execution;
 
+import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.seatunnel.shade.com.typesafe.config.Config;
 
 import org.apache.seatunnel.api.common.CommonOptions;
@@ -46,6 +47,7 @@ import org.apache.flink.types.Row;
 import java.net.URL;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 import static org.apache.seatunnel.api.common.CommonOptions.PLUGIN_NAME;
@@ -57,87 +59,79 @@ public class SinkExecuteProcessor
     private static final String PLUGIN_TYPE = PluginType.SINK.getType();
 
     protected SinkExecuteProcessor(
-            List<URL> jarPaths,
-            Config envConfig,
-            List<? extends Config> pluginConfigs,
-            JobContext jobContext) {
-        super(jarPaths, envConfig, pluginConfigs, jobContext);
+            Config pluginConfig,
+            JobContext jobContext,
+            Set<URL> jarPaths,
+            Config envConfig) {
+        super(pluginConfig, jobContext, jarPaths, envConfig);
     }
 
     @Override
-    protected List<Optional<? extends Factory>> initializePlugins(
-            List<URL> jarPaths, List<? extends Config> pluginConfigs) {
+    protected Optional<? extends Factory> initializePlugin(Config pluginConfig) {
         SeaTunnelFactoryDiscovery factoryDiscovery =
                 new SeaTunnelFactoryDiscovery(TableSinkFactory.class, ADD_URL_TO_CLASSLOADER);
-        SeaTunnelSinkPluginDiscovery sinkPluginDiscovery =
-                new SeaTunnelSinkPluginDiscovery(ADD_URL_TO_CLASSLOADER);
-        return pluginConfigs.stream()
-                .map(
-                        sinkConfig ->
-                                PluginUtil.createSinkFactory(
-                                        factoryDiscovery,
-                                        sinkPluginDiscovery,
-                                        sinkConfig,
-                                        jarPaths))
-                .distinct()
-                .collect(Collectors.toList());
+        SeaTunnelSinkPluginDiscovery sinkPluginDiscovery = new SeaTunnelSinkPluginDiscovery(ADD_URL_TO_CLASSLOADER);
+        return PluginUtil.createSinkFactory(
+                factoryDiscovery,
+                sinkPluginDiscovery,
+                pluginConfig,
+                jarPaths);
     }
 
     @Override
-    public List<DataStreamTableInfo> execute(List<DataStreamTableInfo> upstreamDataStreams)
-            throws TaskExecuteException {
+    public DataStreamTableInfo execute(List<DataStreamTableInfo> upstreamDataStreams) throws TaskExecuteException {
+        Optional<DataStream<Row>> reduce = upstreamDataStreams.stream()
+                .map(t -> t.getDataStream()).reduce((t1, t2) -> t1.union(t2));
+        if (!reduce.isPresent()) {
+            throw new TaskExecuteException("该节点没有上游节点！");
+        }
+        DataStream<Row> stream = reduce.get();
+
+        ClassLoader classLoader = Thread.currentThread().getContextClassLoader();
         SeaTunnelSinkPluginDiscovery sinkPluginDiscovery =
                 new SeaTunnelSinkPluginDiscovery(ADD_URL_TO_CLASSLOADER);
-        DataStreamTableInfo input = upstreamDataStreams.get(0);
-        ClassLoader classLoader = Thread.currentThread().getContextClassLoader();
-        for (int i = 0; i < plugins.size(); i++) {
-            Config sinkConfig = pluginConfigs.get(i);
-            DataStreamTableInfo stream =
-                    fromSourceTable(sinkConfig, upstreamDataStreams).orElse(input);
-            Optional<? extends Factory> factory = plugins.get(i);
-            boolean fallBack = !factory.isPresent() || isFallback(factory.get());
-            SeaTunnelSink sink;
-            if (fallBack) {
-                sink =
-                        fallbackCreateSink(
-                                sinkPluginDiscovery,
-                                PluginIdentifier.of(
-                                        ENGINE_TYPE,
-                                        PLUGIN_TYPE,
-                                        sinkConfig.getString(PLUGIN_NAME.key())),
-                                sinkConfig);
-                sink.setJobContext(jobContext);
-                SeaTunnelRowType sourceType = stream.getCatalogTable().getSeaTunnelRowType();
-                sink.setTypeInfo(sourceType);
-            } else {
-                TableSinkFactoryContext context =
-                        new TableSinkFactoryContext(
-                                stream.getCatalogTable(),
-                                ReadonlyConfig.fromConfig(sinkConfig),
-                                classLoader);
-                ConfigValidator.of(context.getOptions()).validate(factory.get().optionRule());
-                sink = ((TableSinkFactory) factory.get()).createSink(context).createSink();
-                sink.setJobContext(jobContext);
-            }
-            if (SupportSaveMode.class.isAssignableFrom(sink.getClass())) {
-                SupportSaveMode saveModeSink = (SupportSaveMode) sink;
-                Optional<SaveModeHandler> saveModeHandler = saveModeSink.getSaveModeHandler();
-                if (saveModeHandler.isPresent()) {
-                    try (SaveModeHandler handler = saveModeHandler.get()) {
-                        new SaveModeExecuteWrapper(handler).execute();
-                    } catch (Exception e) {
-                        throw new SeaTunnelRuntimeException(HANDLE_SAVE_MODE_FAILED, e);
-                    }
+        Optional<? extends Factory> factory = plugin;
+        boolean fallBack = !factory.isPresent() || isFallback(factory.get());
+        SeaTunnelSink sink;
+        if (fallBack) {
+            sink =
+                    fallbackCreateSink(
+                            sinkPluginDiscovery,
+                            PluginIdentifier.of(
+                                    ENGINE_TYPE,
+                                    PLUGIN_TYPE,
+                                    pluginConfig.getString(PLUGIN_NAME.key())),
+                            pluginConfig);
+            sink.setJobContext(jobContext);
+            SeaTunnelRowType sourceType = upstreamDataStreams.get(0).getCatalogTable().getSeaTunnelRowType();
+            sink.setTypeInfo(sourceType);
+        } else {
+            TableSinkFactoryContext context =
+                    new TableSinkFactoryContext(
+                            upstreamDataStreams.get(0).getCatalogTable(),
+                            ReadonlyConfig.fromConfig(pluginConfig),
+                            classLoader);
+            ConfigValidator.of(context.getOptions()).validate(factory.get().optionRule());
+            sink = ((TableSinkFactory) factory.get()).createSink(context).createSink();
+            sink.setJobContext(jobContext);
+        }
+        if (SupportSaveMode.class.isAssignableFrom(sink.getClass())) {
+            SupportSaveMode saveModeSink = (SupportSaveMode) sink;
+            Optional<SaveModeHandler> saveModeHandler = saveModeSink.getSaveModeHandler();
+            if (saveModeHandler.isPresent()) {
+                try (SaveModeHandler handler = saveModeHandler.get()) {
+                    new SaveModeExecuteWrapper(handler).execute();
+                } catch (Exception e) {
+                    throw new SeaTunnelRuntimeException(HANDLE_SAVE_MODE_FAILED, e);
                 }
             }
-            DataStreamSink<Row> dataStreamSink =
-                    stream.getDataStream()
-                            .sinkTo(new FlinkSink<>(sink, stream.getCatalogTable()))
-                            .name(sink.getPluginName());
-            if (sinkConfig.hasPath(CommonOptions.PARALLELISM.key())) {
-                int parallelism = sinkConfig.getInt(CommonOptions.PARALLELISM.key());
-                dataStreamSink.setParallelism(parallelism);
-            }
+        }
+        DataStreamSink<Row> dataStreamSink = stream
+                        .sinkTo(new FlinkSink<>(sink, upstreamDataStreams.get(0).getCatalogTable()))
+                        .name(sink.getPluginName());
+        if (pluginConfig.hasPath(CommonOptions.PARALLELISM.key())) {
+            int parallelism = pluginConfig.getInt(CommonOptions.PARALLELISM.key());
+            dataStreamSink.setParallelism(parallelism);
         }
         // the sink is the last stream
         return null;

@@ -46,12 +46,15 @@ import com.google.common.collect.Lists;
 import java.net.URL;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 
 import static org.apache.seatunnel.api.common.CommonOptions.PLUGIN_NAME;
 import static org.apache.seatunnel.api.table.factory.FactoryUtil.DEFAULT_ID;
 import static org.apache.seatunnel.api.table.factory.FactoryUtil.discoverFactory;
 
-/** The util used for Spark/Flink to create to SeaTunnelSource etc. */
+/**
+ * The util used for Spark/Flink to create to SeaTunnelSource etc.
+ */
 public class PluginUtil {
 
     protected static final String ENGINE_TYPE = "seatunnel";
@@ -114,7 +117,7 @@ public class PluginUtil {
         } catch (Exception e) {
             if (e instanceof UnsupportedOperationException
                     && "The Factory has not been implemented and the deprecated Plugin will be used."
-                            .equals(e.getMessage())) {
+                    .equals(e.getMessage())) {
                 return true;
             }
         }
@@ -133,7 +136,7 @@ public class PluginUtil {
     public static TableTransformFactory createTransformFactory(
             SeaTunnelTransformPluginDiscovery transformPluginDiscovery,
             Config transformConfig,
-            List<URL> pluginJars) {
+            Set<URL> pluginJars) {
         PluginIdentifier pluginIdentifier =
                 PluginIdentifier.of(
                         ENGINE_TYPE, "transform", transformConfig.getString(PLUGIN_NAME.key()));
@@ -151,7 +154,7 @@ public class PluginUtil {
             SeaTunnelFactoryDiscovery factoryDiscovery,
             SeaTunnelSinkPluginDiscovery sinkPluginDiscovery,
             Config sinkConfig,
-            List<URL> pluginJars) {
+            Set<URL> pluginJars) {
         PluginIdentifier pluginIdentifier =
                 PluginIdentifier.of(ENGINE_TYPE, "sink", sinkConfig.getString(PLUGIN_NAME.key()));
         pluginJars.addAll(
@@ -166,7 +169,7 @@ public class PluginUtil {
     public static void ensureJobModeMatch(JobContext jobContext, SeaTunnelSource source) {
         if (jobContext.getJobMode() == JobMode.BATCH
                 && source.getBoundedness()
-                        == org.apache.seatunnel.api.source.Boundedness.UNBOUNDED) {
+                == org.apache.seatunnel.api.source.Boundedness.UNBOUNDED) {
             throw new UnsupportedOperationException(
                     String.format(
                             "'%s' source don't support off-line job.", source.getPluginName()));

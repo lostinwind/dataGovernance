@@ -35,6 +35,7 @@ import java.net.URLClassLoader;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.function.BiConsumer;
 
 import static org.apache.seatunnel.api.common.CommonOptions.RESULT_TABLE_NAME;
@@ -61,20 +62,22 @@ public abstract class FlinkAbstractPluginExecuteProcessor<T>
             };
 
     protected FlinkRuntimeEnvironment flinkRuntimeEnvironment;
-    protected final List<? extends Config> pluginConfigs;
+    protected final Config pluginConfig;
     protected JobContext jobContext;
-    protected final List<T> plugins;
-    protected final Config envConfig;
+    protected final T plugin;
+    protected Set<URL> jarPaths;
+    protected Config envConfig;
 
     protected FlinkAbstractPluginExecuteProcessor(
-            List<URL> jarPaths,
-            Config envConfig,
-            List<? extends Config> pluginConfigs,
-            JobContext jobContext) {
-        this.pluginConfigs = pluginConfigs;
+            Config pluginConfig,
+            JobContext jobContext,
+            Set<URL> jarPaths,
+            Config envConfig) {
+        this.jarPaths = jarPaths;
+        this.pluginConfig = pluginConfig;
         this.jobContext = jobContext;
-        this.plugins = initializePlugins(jarPaths, pluginConfigs);
         this.envConfig = envConfig;
+        this.plugin = initializePlugin(pluginConfig);
     }
 
     @Override
@@ -138,6 +141,5 @@ public abstract class FlinkAbstractPluginExecuteProcessor<T>
         }
     }
 
-    protected abstract List<T> initializePlugins(
-            List<URL> jarPaths, List<? extends Config> pluginConfigs);
+    protected abstract T initializePlugin(Config pluginConfig);
 }

@@ -17,15 +17,14 @@
 
 package org.apache.seatunnel.core.starter.flink.execution;
 
-import org.apache.seatunnel.shade.com.typesafe.config.Config;
-import org.apache.seatunnel.shade.com.typesafe.config.ConfigUtil;
-import org.apache.seatunnel.shade.com.typesafe.config.ConfigValueFactory;
-
+import org.apache.commons.lang3.StringUtils;
+import org.apache.flink.api.common.JobExecutionResult;
+import org.apache.flink.api.common.RuntimeExecutionMode;
 import org.apache.seatunnel.api.common.JobContext;
+import org.apache.seatunnel.api.dag.JobDagNode;
+import org.apache.seatunnel.api.dag.JobDagUtils;
 import org.apache.seatunnel.api.env.EnvCommonOptions;
-import org.apache.seatunnel.common.Constants;
 import org.apache.seatunnel.common.config.Common;
-import org.apache.seatunnel.common.config.TypesafeConfigUtils;
 import org.apache.seatunnel.common.constants.JobMode;
 import org.apache.seatunnel.common.utils.SeaTunnelException;
 import org.apache.seatunnel.core.starter.exception.TaskExecuteException;
@@ -33,11 +32,10 @@ import org.apache.seatunnel.core.starter.execution.PluginExecuteProcessor;
 import org.apache.seatunnel.core.starter.execution.RuntimeEnvironment;
 import org.apache.seatunnel.core.starter.execution.TaskExecution;
 import org.apache.seatunnel.core.starter.flink.FlinkStarter;
+import org.apache.seatunnel.shade.com.typesafe.config.Config;
+import org.apache.seatunnel.shade.com.typesafe.config.ConfigUtil;
+import org.apache.seatunnel.shade.com.typesafe.config.ConfigValueFactory;
 import org.apache.seatunnel.translation.flink.metric.FlinkJobMetricsSummary;
-
-import org.apache.flink.api.common.JobExecutionResult;
-import org.apache.flink.api.common.RuntimeExecutionMode;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -45,11 +43,7 @@ import java.io.File;
 import java.net.MalformedURLException;
 import java.net.URL;
 import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.List;
-import java.util.Set;
+import java.util.*;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -59,18 +53,15 @@ public class FlinkExecution implements TaskExecution {
     private static final Logger LOGGER = LoggerFactory.getLogger(FlinkExecution.class);
 
     private final FlinkRuntimeEnvironment flinkRuntimeEnvironment;
-    private final PluginExecuteProcessor<DataStreamTableInfo, FlinkRuntimeEnvironment>
-            sourcePluginExecuteProcessor;
-    private final PluginExecuteProcessor<DataStreamTableInfo, FlinkRuntimeEnvironment>
-            transformPluginExecuteProcessor;
-    private final PluginExecuteProcessor<DataStreamTableInfo, FlinkRuntimeEnvironment>
-            sinkPluginExecuteProcessor;
-    private final List<URL> jarPaths;
+    private final List<JobDagNode> sourceDagNodes;
+    private final Map<String, PluginExecuteProcessor> pluginExecuteProcessorMap;
+    private final Set<URL> jarPaths;
+    private final Config envConfig;
 
     public FlinkExecution(Config config) {
         try {
             jarPaths =
-                    new ArrayList<>(
+                    new HashSet<>(
                             Collections.singletonList(
                                     new File(
                                                     Common.appStarterDir()
@@ -81,50 +72,67 @@ public class FlinkExecution implements TaskExecution {
         } catch (MalformedURLException e) {
             throw new SeaTunnelException("load flink starter error.", e);
         }
-        Config envConfig = config.getConfig("env");
+        envConfig = config.getConfig("env");
         registerPlugin(envConfig);
         JobContext jobContext = new JobContext();
         jobContext.setJobMode(RuntimeEnvironment.getJobMode(config));
 
-        this.sourcePluginExecuteProcessor =
-                new SourceExecuteProcessor(
-                        jarPaths, envConfig, config.getConfigList(Constants.SOURCE), jobContext);
-        this.transformPluginExecuteProcessor =
-                new TransformExecuteProcessor(
-                        jarPaths,
-                        envConfig,
-                        TypesafeConfigUtils.getConfigList(
-                                config, Constants.TRANSFORM, Collections.emptyList()),
-                        jobContext);
-        this.sinkPluginExecuteProcessor =
-                new SinkExecuteProcessor(
-                        jarPaths, envConfig, config.getConfigList(Constants.SINK), jobContext);
+        List<JobDagNode> dagNodeList = JobDagUtils.createDagNodeChainByConfig(config);
+        sourceDagNodes = dagNodeList.stream()
+                .filter(node -> "input".equals(node.getType()))
+                .collect(Collectors.toList());
 
-        this.flinkRuntimeEnvironment =
-                FlinkRuntimeEnvironment.getInstance(this.registerPlugin(config, jarPaths));
+        pluginExecuteProcessorMap = new HashMap<>();
+        dagNodeList.forEach(node -> {
+            try {
+                initExecuteProcessor(node, jobContext);
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+        });
 
-        this.sourcePluginExecuteProcessor.setRuntimeEnvironment(flinkRuntimeEnvironment);
-        this.transformPluginExecuteProcessor.setRuntimeEnvironment(flinkRuntimeEnvironment);
-        this.sinkPluginExecuteProcessor.setRuntimeEnvironment(flinkRuntimeEnvironment);
+//        this.flinkRuntimeEnvironment = FlinkRuntimeEnvironment.getInstance(this.registerPlugin(config, jarPaths));
+        this.flinkRuntimeEnvironment = FlinkRuntimeEnvironment.getInstance(config);
+        for (PluginExecuteProcessor pluginExecuteProcessor : pluginExecuteProcessorMap.values()) {
+            pluginExecuteProcessor.setRuntimeEnvironment(flinkRuntimeEnvironment);
+        }
+    }
+
+    private void initExecuteProcessor(JobDagNode dagNode, JobContext jobContext) throws Exception {
+        PluginExecuteProcessor pluginExecuteProcessor = null;
+        if (StringUtils.equalsIgnoreCase("input", dagNode.getType())) {
+            pluginExecuteProcessor = new SourceExecuteProcessor(dagNode.getConfig(), jobContext, jarPaths, envConfig);
+        } else if (StringUtils.equalsIgnoreCase("transition", dagNode.getType())) {
+            pluginExecuteProcessor = new TransformExecuteProcessor(dagNode.getConfig(), jobContext, jarPaths, envConfig);
+        } else if (StringUtils.equalsIgnoreCase("output", dagNode.getType())) {
+            pluginExecuteProcessor = new SinkExecuteProcessor(dagNode.getConfig(), jobContext, jarPaths, envConfig);
+        }
+        pluginExecuteProcessorMap.put(dagNode.getId(), pluginExecuteProcessor);
     }
 
     @Override
     public void execute() throws TaskExecuteException {
-        List<DataStreamTableInfo> dataStreams = new ArrayList<>();
-        dataStreams = sourcePluginExecuteProcessor.execute(dataStreams);
-        dataStreams = transformPluginExecuteProcessor.execute(dataStreams);
-        sinkPluginExecuteProcessor.execute(dataStreams);
-        LOGGER.info(
-                "Flink Execution Plan: {}",
-                flinkRuntimeEnvironment.getStreamExecutionEnvironment().getExecutionPlan());
-        LOGGER.info("Flink job name: {}", flinkRuntimeEnvironment.getJobName());
-        if (!flinkRuntimeEnvironment.isStreaming()) {
-            flinkRuntimeEnvironment
-                    .getStreamExecutionEnvironment()
-                    .setRuntimeMode(RuntimeExecutionMode.BATCH);
-            LOGGER.info("Flink job Mode: {}", JobMode.BATCH);
-        }
+        Map<String, DataStreamTableInfo> dataNodeIdDatasetMap = new HashMap<>();
+        sourceDagNodes.stream().forEach(dagNode -> {
+            try {
+                handlePluginExecute(dagNode, dataNodeIdDatasetMap);
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+        });
+
         try {
+            LOGGER.info(
+                    "Flink Execution Plan: {}",
+                    flinkRuntimeEnvironment.getStreamExecutionEnvironment().getExecutionPlan());
+            LOGGER.info("Flink job name: {}", flinkRuntimeEnvironment.getJobName());
+            if (!flinkRuntimeEnvironment.isStreaming()) {
+                flinkRuntimeEnvironment
+                        .getStreamExecutionEnvironment()
+                        .setRuntimeMode(RuntimeExecutionMode.BATCH);
+                LOGGER.info("Flink job Mode: {}", JobMode.BATCH);
+            }
+
             final long jobStartTime = System.currentTimeMillis();
             JobExecutionResult jobResult =
                     flinkRuntimeEnvironment
@@ -141,7 +149,32 @@ public class FlinkExecution implements TaskExecution {
 
             LOGGER.info("Job finished, execution result: \n{}", jobMetricsSummary);
         } catch (Exception e) {
-            throw new TaskExecuteException("Execute Flink job error", e);
+            throw new RuntimeException("Execute Flink job error", e);
+        }
+    }
+
+    private void handlePluginExecute(JobDagNode dagNode,
+                                     Map<String, DataStreamTableInfo> dataNodeIdDatasetMap) throws Exception {
+        DataStreamTableInfo dataStreamTableInfo = dataNodeIdDatasetMap.get(dagNode.getId());
+        if (dataStreamTableInfo != null) return;
+        PluginExecuteProcessor<DataStreamTableInfo, FlinkRuntimeEnvironment> pluginExecuteProcessor =
+                pluginExecuteProcessorMap.get(dagNode.getId());
+        if (dagNode.getType().equals("input")) { // 生产dataset
+            dataNodeIdDatasetMap.put(dagNode.getId(), pluginExecuteProcessor.execute(null));
+        } else {
+            List<DataStreamTableInfo> dataStreamTableInfos = new ArrayList<>();
+            for (JobDagNode last : dagNode.getLasts()) {
+                DataStreamTableInfo lastDataStreamTableInfo = dataNodeIdDatasetMap.get(last.getId());
+                if (lastDataStreamTableInfo == null) {
+                    return;
+                } else {
+                    dataStreamTableInfos.add(lastDataStreamTableInfo);
+                }
+            }
+            dataNodeIdDatasetMap.put(dagNode.getId(), pluginExecuteProcessor.execute(dataStreamTableInfos));
+        }
+        for (JobDagNode nextNode : dagNode.getNexts()) {
+            handlePluginExecute(nextNode, dataNodeIdDatasetMap);
         }
     }
 
@@ -174,7 +207,7 @@ public class FlinkExecution implements TaskExecution {
         jarPaths.addAll(jarDependencies);
     }
 
-    private Config registerPlugin(Config config, List<URL> jars) {
+    private Config registerPlugin(Config config, Set<URL> jars) {
         config =
                 this.injectJarsToConfig(
                         config, ConfigUtil.joinPath("env", "pipeline", "jars"), jars);
@@ -182,7 +215,7 @@ public class FlinkExecution implements TaskExecution {
                 config, ConfigUtil.joinPath("env", "pipeline", "classpaths"), jars);
     }
 
-    private Config injectJarsToConfig(Config config, String path, List<URL> jars) {
+    private Config injectJarsToConfig(Config config, String path, Set<URL> jars) {
         List<URL> validJars = new ArrayList<>();
         for (URL jarUrl : jars) {
             if (new File(jarUrl.getFile()).exists()) {

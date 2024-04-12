@@ -50,7 +50,8 @@ public class ConfigBuilder {
                         .resolveWith(
                                 ConfigFactory.systemProperties(),
                                 ConfigResolveOptions.defaults().setAllowUnresolved(true));
-        return ConfigShadeUtils.decryptConfig(config);
+//        return ConfigShadeUtils.decryptConfig(config);
+        return config;
     }
 
     public static Config of(@NonNull String filePath) {
