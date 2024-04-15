@@ -29,6 +29,10 @@ In `STREAMING` mode, checkpoints is required, if you do not set it, it will be o
 
 This parameter configures the parallelism of source and sink.
 
+### job.retry.times
+
+Used to control the default retry times when a job fails. The default value is 3, and it only works in the Zeta engine.
+
 ### shade.identifier
 
 Specify the method of encryption, if you didn't have the requirement for encrypting or decrypting config files, this option can be ignored.
