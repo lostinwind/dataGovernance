@@ -39,17 +39,9 @@ public class KafkaSinkFactory implements TableSinkFactory {
     @Override
     public OptionRule optionRule() {
         return OptionRule.builder()
-                .required(Config.FORMAT, Config.BOOTSTRAP_SERVERS)
-                .conditional(
-                        Config.FORMAT,
-                        Arrays.asList(
-                                MessageFormat.JSON,
-                                MessageFormat.CANAL_JSON,
-                                MessageFormat.TEXT,
-                                MessageFormat.OGG_JSON,
-                                MessageFormat.AVRO),
-                        Config.TOPIC)
+                .required(Config.TOPIC, Config.BOOTSTRAP_SERVERS)
                 .optional(
+                        Config.FORMAT,
                         Config.KAFKA_CONFIG,
                         Config.ASSIGN_PARTITIONS,
                         Config.TRANSACTION_PREFIX,
