@@ -77,7 +77,7 @@ public abstract class FlinkAbstractPluginExecuteProcessor<T>
         this.pluginConfig = pluginConfig;
         this.jobContext = jobContext;
         this.envConfig = envConfig;
-        this.plugin = initializePlugin(pluginConfig);
+        this.plugin = initializePlugin();
     }
 
     @Override
@@ -141,5 +141,5 @@ public abstract class FlinkAbstractPluginExecuteProcessor<T>
         }
     }
 
-    protected abstract T initializePlugin(Config pluginConfig);
+    protected abstract T initializePlugin();
 }

@@ -34,20 +34,20 @@ import static org.apache.seatunnel.api.common.CommonOptions.RESULT_TABLE_NAME;
 public abstract class SparkAbstractPluginExecuteProcessor<T>
         implements PluginExecuteProcessor<DatasetTableInfo, SparkRuntimeEnvironment> {
     protected SparkRuntimeEnvironment sparkRuntimeEnvironment;
-    protected final List<? extends Config> pluginConfigs;
+    protected final Config pluginConfig;
     protected final JobContext jobContext;
-    protected final List<T> plugins;
+    protected final T plugin;
     protected static final String ENGINE_TYPE = "seatunnel";
     protected static final String SOURCE_TABLE_NAME = "source_table_name";
 
     protected SparkAbstractPluginExecuteProcessor(
             SparkRuntimeEnvironment sparkRuntimeEnvironment,
             JobContext jobContext,
-            List<? extends Config> pluginConfigs) {
+            Config pluginConfig) {
         this.sparkRuntimeEnvironment = sparkRuntimeEnvironment;
         this.jobContext = jobContext;
-        this.pluginConfigs = pluginConfigs;
-        this.plugins = initializePlugins(pluginConfigs);
+        this.pluginConfig = pluginConfig;
+        this.plugin = initializePlugin();
     }
 
     @Override
@@ -55,7 +55,7 @@ public abstract class SparkAbstractPluginExecuteProcessor<T>
         this.sparkRuntimeEnvironment = sparkRuntimeEnvironment;
     }
 
-    protected abstract List<T> initializePlugins(List<? extends Config> pluginConfigs);
+    protected abstract T initializePlugin();
 
     protected void registerInputTempView(Config pluginConfig, Dataset<Row> dataStream) {
         if (pluginConfig.hasPath(RESULT_TABLE_NAME.key())) {

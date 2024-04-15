@@ -89,7 +89,7 @@ public class SourceExecuteProcessor extends FlinkAbstractPluginExecuteProcessor<
     }
 
     @Override
-    protected SourceTableInfo initializePlugin(Config pluginConfig) {
+    protected SourceTableInfo initializePlugin() {
         SeaTunnelSourcePluginDiscovery sourcePluginDiscovery =
                 new SeaTunnelSourcePluginDiscovery(ADD_URL_TO_CLASSLOADER);
 

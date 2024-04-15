@@ -17,59 +17,97 @@
 
 package org.apache.seatunnel.core.starter.spark.execution;
 
-import org.apache.seatunnel.shade.com.typesafe.config.Config;
-
+import lombok.extern.slf4j.Slf4j;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.seatunnel.api.common.JobContext;
-import org.apache.seatunnel.common.Constants;
-import org.apache.seatunnel.common.config.TypesafeConfigUtils;
+import org.apache.seatunnel.api.dag.JobDagNode;
+import org.apache.seatunnel.api.dag.JobDagUtils;
 import org.apache.seatunnel.core.starter.exception.TaskExecuteException;
 import org.apache.seatunnel.core.starter.execution.PluginExecuteProcessor;
 import org.apache.seatunnel.core.starter.execution.RuntimeEnvironment;
 import org.apache.seatunnel.core.starter.execution.TaskExecution;
-
-import lombok.extern.slf4j.Slf4j;
+import org.apache.seatunnel.shade.com.typesafe.config.Config;
 
 import java.util.ArrayList;
-import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
 
 @Slf4j
 public class SparkExecution implements TaskExecution {
     private final SparkRuntimeEnvironment sparkRuntimeEnvironment;
-    private final PluginExecuteProcessor<DatasetTableInfo, SparkRuntimeEnvironment>
-            sourcePluginExecuteProcessor;
-    private final PluginExecuteProcessor<DatasetTableInfo, SparkRuntimeEnvironment>
-            transformPluginExecuteProcessor;
-    private final PluginExecuteProcessor<DatasetTableInfo, SparkRuntimeEnvironment>
-            sinkPluginExecuteProcessor;
+    private final List<JobDagNode> sourceDagNodes;
+    private final Map<String, PluginExecuteProcessor> pluginExecuteProcessorMap;
 
     public SparkExecution(Config config) {
         this.sparkRuntimeEnvironment = SparkRuntimeEnvironment.getInstance(config);
         JobContext jobContext = new JobContext();
         jobContext.setJobMode(RuntimeEnvironment.getJobMode(config));
-        this.sourcePluginExecuteProcessor =
-                new SourceExecuteProcessor(
-                        sparkRuntimeEnvironment,
-                        jobContext,
-                        config.getConfigList(Constants.SOURCE));
-        this.transformPluginExecuteProcessor =
-                new TransformExecuteProcessor(
-                        sparkRuntimeEnvironment,
-                        jobContext,
-                        TypesafeConfigUtils.getConfigList(
-                                config, Constants.TRANSFORM, Collections.emptyList()));
-        this.sinkPluginExecuteProcessor =
-                new SinkExecuteProcessor(
-                        sparkRuntimeEnvironment, jobContext, config.getConfigList(Constants.SINK));
+
+        List<JobDagNode> dagNodeList = JobDagUtils.createDagNodeChainByConfig(config);
+        sourceDagNodes = dagNodeList.stream()
+                .filter(node -> "input".equals(node.getType()))
+                .collect(Collectors.toList());
+
+        pluginExecuteProcessorMap = new HashMap<>();
+        dagNodeList.forEach(node -> {
+            try {
+                initExecuteProcessor(node, jobContext);
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+        });
+    }
+
+    private void initExecuteProcessor(JobDagNode dagNode, JobContext jobContext) throws Exception {
+        PluginExecuteProcessor pluginExecuteProcessor = null;
+        if (StringUtils.equalsIgnoreCase("input", dagNode.getType())) {
+            pluginExecuteProcessor = new SourceExecuteProcessor(sparkRuntimeEnvironment, jobContext, dagNode.getConfig());
+        } else if (StringUtils.equalsIgnoreCase("transition", dagNode.getType())) {
+            pluginExecuteProcessor = new TransformExecuteProcessor(sparkRuntimeEnvironment, jobContext, dagNode.getConfig());
+        } else if (StringUtils.equalsIgnoreCase("output", dagNode.getType())) {
+            pluginExecuteProcessor = new SinkExecuteProcessor(sparkRuntimeEnvironment, jobContext, dagNode.getConfig());
+        }
+        pluginExecuteProcessorMap.put(dagNode.getId(), pluginExecuteProcessor);
     }
 
     @Override
     public void execute() throws TaskExecuteException {
-        List<DatasetTableInfo> datasets = new ArrayList<>();
-//        datasets = sourcePluginExecuteProcessor.execute(datasets);
-//        datasets = transformPluginExecuteProcessor.execute(datasets);
-        sinkPluginExecuteProcessor.execute(datasets);
+        Map<String, DatasetTableInfo> dataNodeIdDatasetMap = new HashMap<>();
+        sourceDagNodes.stream().forEach(dagNode -> {
+            try {
+                handlePluginExecute(dagNode, dataNodeIdDatasetMap);
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+        });
         log.info("Spark Execution started");
+    }
+
+    private void handlePluginExecute(JobDagNode dagNode,
+                                     Map<String, DatasetTableInfo> dataNodeIdDatasetMap) throws Exception {
+        DatasetTableInfo datasetTableInfo = dataNodeIdDatasetMap.get(dagNode.getId());
+        if (datasetTableInfo != null) return;
+        PluginExecuteProcessor<DatasetTableInfo, SparkRuntimeEnvironment> pluginExecuteProcessor =
+                pluginExecuteProcessorMap.get(dagNode.getId());
+        if (dagNode.getType().equals("input")) { // 生产dataset
+            dataNodeIdDatasetMap.put(dagNode.getId(), pluginExecuteProcessor.execute(null));
+        } else {
+            List<DatasetTableInfo> datasetTableInfos = new ArrayList<>();
+            for (JobDagNode last : dagNode.getLasts()) {
+                DatasetTableInfo lastDatasetTableInfo = dataNodeIdDatasetMap.get(last.getId());
+                if (lastDatasetTableInfo == null) {
+                    return;
+                } else {
+                    datasetTableInfos.add(lastDatasetTableInfo);
+                }
+            }
+            dataNodeIdDatasetMap.put(dagNode.getId(), pluginExecuteProcessor.execute(datasetTableInfos));
+        }
+        for (JobDagNode nextNode : dagNode.getNexts()) {
+            handlePluginExecute(nextNode, dataNodeIdDatasetMap);
+        }
     }
 
     public SparkRuntimeEnvironment getSparkRuntimeEnvironment() {

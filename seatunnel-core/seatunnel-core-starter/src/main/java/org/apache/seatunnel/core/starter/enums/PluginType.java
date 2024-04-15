@@ -21,7 +21,9 @@ package org.apache.seatunnel.core.starter.enums;
 public enum PluginType {
     SOURCE("source"),
     TRANSFORM("transform"),
-    SINK("sink");
+    SINK("sink"),
+
+    DAG("dag");
 
     private final String type;
 

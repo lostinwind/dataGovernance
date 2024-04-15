@@ -91,7 +91,9 @@ public class FlinkExecution implements TaskExecution {
             }
         });
 
+        // 生产环境
 //        this.flinkRuntimeEnvironment = FlinkRuntimeEnvironment.getInstance(this.registerPlugin(config, jarPaths));
+        // 本地开发环境
         this.flinkRuntimeEnvironment = FlinkRuntimeEnvironment.getInstance(config);
         for (PluginExecuteProcessor pluginExecuteProcessor : pluginExecuteProcessorMap.values()) {
             pluginExecuteProcessor.setRuntimeEnvironment(flinkRuntimeEnvironment);

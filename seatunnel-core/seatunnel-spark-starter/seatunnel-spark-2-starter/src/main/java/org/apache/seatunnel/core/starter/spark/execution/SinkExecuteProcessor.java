@@ -17,8 +17,6 @@
 
 package org.apache.seatunnel.core.starter.spark.execution;
 
-import org.apache.seatunnel.shade.com.typesafe.config.Config;
-
 import org.apache.seatunnel.api.common.CommonOptions;
 import org.apache.seatunnel.api.common.JobContext;
 import org.apache.seatunnel.api.configuration.ReadonlyConfig;
@@ -39,16 +37,16 @@ import org.apache.seatunnel.core.starter.execution.PluginUtil;
 import org.apache.seatunnel.plugin.discovery.PluginIdentifier;
 import org.apache.seatunnel.plugin.discovery.seatunnel.SeaTunnelFactoryDiscovery;
 import org.apache.seatunnel.plugin.discovery.seatunnel.SeaTunnelSinkPluginDiscovery;
+import org.apache.seatunnel.shade.com.typesafe.config.Config;
 import org.apache.seatunnel.translation.spark.sink.SparkSinkInjector;
-
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
 
 import java.net.URL;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
-import java.util.stream.Collectors;
 
 import static org.apache.seatunnel.api.common.CommonOptions.PLUGIN_NAME;
 import static org.apache.seatunnel.api.common.SeaTunnelAPIErrorCode.HANDLE_SAVE_MODE_FAILED;
@@ -60,105 +58,95 @@ public class SinkExecuteProcessor
     protected SinkExecuteProcessor(
             SparkRuntimeEnvironment sparkRuntimeEnvironment,
             JobContext jobContext,
-            List<? extends Config> pluginConfigs) {
-        super(sparkRuntimeEnvironment, jobContext, pluginConfigs);
+            Config pluginConfig) {
+        super(sparkRuntimeEnvironment, jobContext, pluginConfig);
     }
 
     @Override
-    protected List<Optional<? extends Factory>> initializePlugins(
-            List<? extends Config> pluginConfigs) {
-        SeaTunnelFactoryDiscovery factoryDiscovery =
-                new SeaTunnelFactoryDiscovery(TableSinkFactory.class);
+    protected Optional<? extends Factory> initializePlugin() {
+        SeaTunnelFactoryDiscovery factoryDiscovery = new SeaTunnelFactoryDiscovery(TableSinkFactory.class);
         SeaTunnelSinkPluginDiscovery sinkPluginDiscovery = new SeaTunnelSinkPluginDiscovery();
         List<URL> pluginJars = new ArrayList<>();
-        List<Optional<? extends Factory>> sinks =
-                pluginConfigs.stream()
-                        .map(
-                                sinkConfig ->
-                                        PluginUtil.createSinkFactory(
-                                                factoryDiscovery,
-                                                sinkPluginDiscovery,
-                                                sinkConfig,
-                                                pluginJars))
-                        .distinct()
-                        .collect(Collectors.toList());
         sparkRuntimeEnvironment.registerPlugin(pluginJars);
-        return sinks;
+        return PluginUtil.createSinkFactory(
+                factoryDiscovery,
+                sinkPluginDiscovery,
+                pluginConfig,
+                new HashSet<>());
     }
 
     @Override
-    public List<DatasetTableInfo> execute(List<DatasetTableInfo> upstreamDataStreams)
+    public DatasetTableInfo execute(List<DatasetTableInfo> upstreamDataStreams)
             throws TaskExecuteException {
+        Optional<Dataset<Row>> reduce = upstreamDataStreams.stream()
+                .map(t -> t.getDataset()).reduce((t1, t2) -> t1.union(t2));
+        if (!reduce.isPresent()) {
+            throw new TaskExecuteException("该节点没有上游节点！");
+        }
+        Dataset<Row> stream = reduce.get();
+
         SeaTunnelSinkPluginDiscovery sinkPluginDiscovery = new SeaTunnelSinkPluginDiscovery();
         ClassLoader classLoader = Thread.currentThread().getContextClassLoader();
-        DatasetTableInfo input = upstreamDataStreams.get(0);
-        for (int i = 0; i < plugins.size(); i++) {
-            Config sinkConfig = pluginConfigs.get(i);
-            DatasetTableInfo datasetTableInfo =
-                    fromSourceTable(sinkConfig, sparkRuntimeEnvironment, upstreamDataStreams)
-                            .orElse(input);
-            SeaTunnelDataType<?> inputType =
-                    datasetTableInfo.getCatalogTable().getSeaTunnelRowType();
-            Dataset<Row> dataset = datasetTableInfo.getDataset();
 
-            int parallelism;
-            if (sinkConfig.hasPath(CommonOptions.PARALLELISM.key())) {
-                parallelism = sinkConfig.getInt(CommonOptions.PARALLELISM.key());
-            } else {
-                parallelism =
-                        sparkRuntimeEnvironment
-                                .getSparkConf()
-                                .getInt(
-                                        CommonOptions.PARALLELISM.key(),
-                                        CommonOptions.PARALLELISM.defaultValue());
-            }
-            dataset.sparkSession().read().option(CommonOptions.PARALLELISM.key(), parallelism);
-            Optional<? extends Factory> factory = plugins.get(i);
-            boolean fallBack = !factory.isPresent() || isFallback(factory.get());
-            SeaTunnelSink sink;
-            if (fallBack) {
-                sink =
-                        fallbackCreateSink(
-                                sinkPluginDiscovery,
-                                PluginIdentifier.of(
-                                        ENGINE_TYPE,
-                                        PLUGIN_TYPE,
-                                        sinkConfig.getString(PLUGIN_NAME.key())),
-                                sinkConfig);
-                sink.setJobContext(jobContext);
-                sink.setTypeInfo((SeaTunnelRowType) inputType);
-            } else {
-                TableSinkFactoryContext context =
-                        new TableSinkFactoryContext(
-                                datasetTableInfo.getCatalogTable(),
-                                ReadonlyConfig.fromConfig(sinkConfig),
-                                classLoader);
-                ConfigValidator.of(context.getOptions()).validate(factory.get().optionRule());
-                sink = ((TableSinkFactory) factory.get()).createSink(context).createSink();
-                sink.setJobContext(jobContext);
-            }
-            // TODO modify checkpoint location
-            if (SupportSaveMode.class.isAssignableFrom(sink.getClass())) {
-                SupportSaveMode saveModeSink = (SupportSaveMode) sink;
-                Optional<SaveModeHandler> saveModeHandler = saveModeSink.getSaveModeHandler();
-                if (saveModeHandler.isPresent()) {
-                    try (SaveModeHandler handler = saveModeHandler.get()) {
-                        new SaveModeExecuteWrapper(handler).execute();
-                    } catch (Exception e) {
-                        throw new SeaTunnelRuntimeException(HANDLE_SAVE_MODE_FAILED, e);
-                    }
+        SeaTunnelDataType<?> inputType = upstreamDataStreams.get(0).getCatalogTable().getSeaTunnelRowType();
+
+        int parallelism;
+        if (pluginConfig.hasPath(CommonOptions.PARALLELISM.key())) {
+            parallelism = pluginConfig.getInt(CommonOptions.PARALLELISM.key());
+        } else {
+            parallelism =
+                    sparkRuntimeEnvironment
+                            .getSparkConf()
+                            .getInt(
+                                    CommonOptions.PARALLELISM.key(),
+                                    CommonOptions.PARALLELISM.defaultValue());
+        }
+        stream.sparkSession().read().option(CommonOptions.PARALLELISM.key(), parallelism);
+        Optional<? extends Factory> factory = plugin;
+        boolean fallBack = !factory.isPresent() || isFallback(factory.get());
+        SeaTunnelSink sink;
+        if (fallBack) {
+            sink =
+                    fallbackCreateSink(
+                            sinkPluginDiscovery,
+                            PluginIdentifier.of(
+                                    ENGINE_TYPE,
+                                    PLUGIN_TYPE,
+                                    pluginConfig.getString(PLUGIN_NAME.key())),
+                            pluginConfig);
+            sink.setJobContext(jobContext);
+            sink.setTypeInfo((SeaTunnelRowType) inputType);
+        } else {
+            TableSinkFactoryContext context =
+                    new TableSinkFactoryContext(
+                            upstreamDataStreams.get(0).getCatalogTable(),
+                            ReadonlyConfig.fromConfig(pluginConfig),
+                            classLoader);
+            ConfigValidator.of(context.getOptions()).validate(factory.get().optionRule());
+            sink = ((TableSinkFactory) factory.get()).createSink(context).createSink();
+            sink.setJobContext(jobContext);
+        }
+        // TODO modify checkpoint location
+        if (SupportSaveMode.class.isAssignableFrom(sink.getClass())) {
+            SupportSaveMode saveModeSink = (SupportSaveMode) sink;
+            Optional<SaveModeHandler> saveModeHandler = saveModeSink.getSaveModeHandler();
+            if (saveModeHandler.isPresent()) {
+                try (SaveModeHandler handler = saveModeHandler.get()) {
+                    new SaveModeExecuteWrapper(handler).execute();
+                } catch (Exception e) {
+                    throw new SeaTunnelRuntimeException(HANDLE_SAVE_MODE_FAILED, e);
                 }
             }
-            String applicationId =
-                    sparkRuntimeEnvironment.getSparkSession().sparkContext().applicationId();
-            SparkSinkInjector.inject(
-                            dataset.write(),
-                            sink,
-                            datasetTableInfo.getCatalogTable(),
-                            applicationId)
-                    .option("checkpointLocation", "/tmp")
-                    .save();
         }
+        String applicationId =
+                sparkRuntimeEnvironment.getSparkSession().sparkContext().applicationId();
+        SparkSinkInjector.inject(
+                        stream.write(),
+                        sink,
+                        upstreamDataStreams.get(0).getCatalogTable(),
+                        applicationId)
+                .option("checkpointLocation", "/tmp")
+                .save();
         // the sink is the last stream
         return null;
     }

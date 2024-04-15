@@ -56,7 +56,7 @@ public class TransformExecuteProcessor
     }
 
     @Override
-    protected TableTransformFactory initializePlugin(Config pluginConfig) {
+    protected TableTransformFactory initializePlugin() {
         SeaTunnelTransformPluginDiscovery transformPluginDiscovery =
                 new SeaTunnelTransformPluginDiscovery();
         return PluginUtil.createTransformFactory(transformPluginDiscovery, pluginConfig, jarPaths);

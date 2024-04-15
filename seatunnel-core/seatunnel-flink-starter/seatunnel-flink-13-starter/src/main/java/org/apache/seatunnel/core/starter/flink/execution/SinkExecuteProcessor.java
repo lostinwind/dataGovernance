@@ -67,7 +67,7 @@ public class SinkExecuteProcessor
     }
 
     @Override
-    protected Optional<? extends Factory> initializePlugin(Config pluginConfig) {
+    protected Optional<? extends Factory> initializePlugin() {
         SeaTunnelFactoryDiscovery factoryDiscovery =
                 new SeaTunnelFactoryDiscovery(TableSinkFactory.class, ADD_URL_TO_CLASSLOADER);
         SeaTunnelSinkPluginDiscovery sinkPluginDiscovery = new SeaTunnelSinkPluginDiscovery(ADD_URL_TO_CLASSLOADER);

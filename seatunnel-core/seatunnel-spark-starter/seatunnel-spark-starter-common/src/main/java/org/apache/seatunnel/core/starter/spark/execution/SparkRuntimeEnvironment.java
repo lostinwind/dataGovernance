@@ -38,7 +38,7 @@ import java.util.List;
 @Slf4j
 public class SparkRuntimeEnvironment implements RuntimeEnvironment {
     private static final long DEFAULT_SPARK_STREAMING_DURATION = 5;
-    private static final String PLUGIN_NAME_KEY = "plugin_name";
+    private static final String PLUGIN_NAME_KEY = "code";
     private static volatile SparkRuntimeEnvironment INSTANCE = null;
 
     private SparkConf sparkConf;
@@ -151,14 +151,8 @@ public class SparkRuntimeEnvironment implements RuntimeEnvironment {
     }
 
     protected boolean checkIsContainHive(Config config) {
-        List<? extends Config> sourceConfigList = config.getConfigList(PluginType.SOURCE.getType());
-        for (Config c : sourceConfigList) {
-            if (c.getString(PLUGIN_NAME_KEY).toLowerCase().contains("hive")) {
-                return true;
-            }
-        }
-        List<? extends Config> sinkConfigList = config.getConfigList(PluginType.SINK.getType());
-        for (Config c : sinkConfigList) {
+        List<? extends Config> pluginConfigList = config.getConfigList(PluginType.DAG.getType());
+        for (Config c : pluginConfigList) {
             if (c.getString(PLUGIN_NAME_KEY).toLowerCase().contains("hive")) {
                 return true;
             }
